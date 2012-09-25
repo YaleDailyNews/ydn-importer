@@ -16,6 +16,7 @@ define( 'MONGODB_IP', "mongodb://50.116.62.82");
 define( 'IMPORT_DEBUG', true );
 define( 'WP_IMPORTING', true );
 define( 'EL_BASE_MEDIA_URL', 'http://yaledailynews.media.clients.ellingtoncms.com/');
+define( 'EL_META_PREFIX', 'ydn_legacy_');
 
 class YDN_Importer {
 
@@ -29,6 +30,7 @@ class YDN_Importer {
   }
 
   function show_page() {
+    set_time_limit(0);
     if ( ! isset( $_GET["target_site"] ) ):
    ?>Load this page with ?target_site=SLUG to import a specific website. Load with ?target_site=users to import users.<?
     elseif ( $_GET["target_site"] == "users" ):
@@ -39,7 +41,7 @@ class YDN_Importer {
           $this->current_site != "main" &&
           $this->current_site != "cross_campus" &&
           $this->current_site != "magazine"
-         ) { die('Invalid site bro.'); }
+         ) { die('Invalid site, bro.'); }
 
       $this->start_site_import();
     endif;
@@ -52,15 +54,20 @@ class YDN_Importer {
     //TODO: SET THE SITE HERE
     $this->mongo_connect();
     $this->import_photos(); 
+
   }
 
   function import_photos() {
     $this->mongo_connect();
     $photos = Db::find("photo", array("wp_sites" => $this->current_site), array("limit" => 1) );
 
-    $legacy_base_path = wp_upload_dir();
-    $legacy_base_path  = $legacy_base_path["basedir"] . "/legacy/";
+    $legacy_photo_prefix = "/legacy/";
+    $wp_upload_dir = wp_upload_dir();
 
+    $legacy_base_path = $wp_upload_dir["basedir"] . $legacy_photo_prefix;
+
+
+    $wp_base_url =  $wp_upload_dir["baseurl"] . $legacy_photo_prefix;
     foreach ($photos as $el_photo) {
       $wp_attachment = Array(); //container we'll fill in with data
 
@@ -69,7 +76,7 @@ class YDN_Importer {
       $photo_path = $legacy_base_path . $el_photo["el_photo"];
       if ( file_exists($photo_path) ) {
         //grab metadata
-        printf("good. we found the path");
+        $wp_attachment['guid'] = $wp_base_url . $el_photo["el_photo"];
       } else {
         //attempt to fetch the photo from the Ellington media server
         $el_url = EL_BASE_MEDIA_URL . $el_photo["el_photo"];
@@ -111,27 +118,42 @@ class YDN_Importer {
 
       $wp_attachment['post_excerpt'] = $el_photo['el_caption'];
 
-      #attempt to find an author in the users table 
-      $authors = Db::find("wp_user", array("true_user" => "false",
-                                           "first_name" => $el_photo["el_photographer_first_name"],
-                                           "last_name" => $el_photo["el_photographer_last_name"]),
-                                     array("limit" -> 1) );
-      
 
+       
+      #attempt to find an author in the users table 
+      $first_name =  array_key_exists("el_photographer_first_name", $el_photo) ? trim($el_photo["el_photographer_first_name"]) : "";
+      $last_name =  array_key_exists("el_photographer_last_name", $el_photo)  ? trim($el_photo["el_photographer_last_name"]) : "";
+      $authors = Db::find("wp_user", array("true_user" => false,
+                                           "first_name" => $first_name, 
+                                           "last_name" =>  $last_name),
+                                     array("limit" => 1) );
+      if ($authors->count() == 1) {
+        $author = $authors->getNext();
+        $wp_attachment['post_author'] = $author["wp_id"];
+      }
       #insert!
       $wp_attachment_id = wp_insert_attachment( $wp_attachment, $photo_path );
       wp_update_attachment_metadata( $wp_attachment_id, wp_generate_attachment_metadata( $wp_attachment_id, $photo_path ) );
 
-      #if we now have a file, use wp_insert_attachment on it
-      #update $photo in mongo with the wp_id
+      #if there's no author assigned but there's a one off byline, create it as a meta field
+      if (array_key_exists("el_one_off_photographer", $el_photo) && !array_key_exists("post_author", $wp_attachment) ) {
+        update_post_meta($wp_attachment_id, 'MEDIA_CREDIT_POSTMETA_KEY', $el_photo["el_one_off_photographer"] );
+      }
+
+      #record the old ellington ID just in case anything ever goes wrong
+      update_post_meta( $wp_attachment_id, EL_META_PREFIX . "id", $el_photo["el_id"] );
+      
+      #send the WP_ID back to mongo
+      $el_photo["wp_id"] = $wp_attachment_id;
+      Db::save("photo",$el_photo);
 
     }
   }
 
   function import_users() {
     $this->mongo_connect();
-    $m_users = Db::find("wp_user",array(), array("limit" => 3000));
-    $default_password = wp_generate_password(100,true,true);
+    $m_users = Db::find("wp_user",array("true_user" => false), array());
+    $default_password = wp_generate_password(50,true,true);
     foreach ($m_users as $m_user) {
       $wp_user = array();
       if ( $m_user["true_user"] == 1 ) {
@@ -183,6 +205,39 @@ class YDN_Importer {
     }
   } 
 
+  function import_galleries() {
+    $this->mongo_connect();
+
+    $showcase_defaults = Array( "source" => "upload",
+                                "source_gallery" => "",
+                                "flickr_id" => "",
+                                "gallery_layour" => "",
+                                "enable_lightbox" => "on",
+                                "show_slideshow" => "off",
+                                "dim_x" => "",
+                                "dim_y" => "",
+                                "show_thumb_caption" => "off",
+                                "slider_animation" => "fase",
+                                "slider_direction" => "horizontal", 
+                                "slider_animate_duration" => "300",
+                                "slider_slideshow" => "off", 
+                                "slider_slideshow_speed" => "7000",
+                                "slider_direction_nav" => "on",
+                                "slider_control_nav" => "on",
+                                "slider_keyboard_nav" => "on", 
+                                "slider_prev_text" => "Previous",
+                                "slider_next_text" => "Next",
+                                "slider_pause_play" => "off",
+                                "slider_pause_text" => "Pause",
+                                "slider_play_text" => "Play",
+                                "slider_random" => "off", 
+                                "slider_start_slide" => "0", 
+                                "slider_pause_action" => "on",
+                                "slider_pause_hover" => "off"
+                              );
+   $galleries = Db::find("gallery", array("wp_sites" => $this->current_size), array("limit" => 1) );
+
+  }
 	/**
 	 * Attempt to download a remote file attachment
 	 *
