@@ -63,6 +63,7 @@ class YDN_Importer {
     //the ordering of these tasks is NOT arbitrary. Think about cascading dependencies etc very carefully
     $this->mongo_connect();
     $this->import_galleries();
+    $this->import_videos();
    # $this->import_photos(); 
 
   }
@@ -287,6 +288,11 @@ class YDN_Importer {
         wp_update_attachment_metadata( $gallery_photo_id , $meta );
       }
     }
+
+  }
+
+  function import_videos() {
+
 
   }
 	/**
