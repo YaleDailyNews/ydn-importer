@@ -52,103 +52,111 @@ class YDN_Importer {
 
   function start_site_import() {
     //TODO: SET THE SITE HERE
+
+    #first set some variables
+    $legacy_photo_prefix = "/legacy/";
+    $wp_upload_dir = wp_upload_dir();
+    $this->legacy_media_base_path = $wp_upload_dir["basedir"] . $legacy_photo_prefix;
+    $this->wp_media_base_url =  $wp_upload_dir["baseurl"] . $legacy_photo_prefix;
+
+    #next run the tasks
+    //the ordering of these tasks is NOT arbitrary. Think about cascading dependencies etc very carefully
     $this->mongo_connect();
-    $this->import_photos(); 
+    $this->import_galleries();
+   # $this->import_photos(); 
 
   }
 
   function import_photos() {
     $this->mongo_connect();
     $photos = Db::find("photo", array("wp_sites" => $this->current_site), array("limit" => 1) );
-
-    $legacy_photo_prefix = "/legacy/";
-    $wp_upload_dir = wp_upload_dir();
-
-    $legacy_base_path = $wp_upload_dir["basedir"] . $legacy_photo_prefix;
-
-
-    $wp_base_url =  $wp_upload_dir["baseurl"] . $legacy_photo_prefix;
     foreach ($photos as $el_photo) {
-      $wp_attachment = Array(); //container we'll fill in with data
-
-      #Figure out if the file is in the file system. Fetch relevant file info if so
-      #If not, grab it from Ellington
-      $photo_path = $legacy_base_path . $el_photo["el_photo"];
-      if ( file_exists($photo_path) ) {
-        //grab metadata
-        $wp_attachment['guid'] = $wp_base_url . $el_photo["el_photo"];
-      } else {
-        //attempt to fetch the photo from the Ellington media server
-        $el_url = EL_BASE_MEDIA_URL . $el_photo["el_photo"];
-        $upload = $this->fetch_remote_file($el_url, $el_photo);
-      
-        if ( is_wp_error( $upload ) ) {
-          printf("Error fetching photo for el_id %d \n", $el_photo["el_id"]);
-          continue;
-        }
-
-        $photo_path = $upload['file'];
-        $wp_attachment['guid'] = $upload['url'];
-      }
-      #grab filedata
-      
-      if ( $info = wp_check_filetype( $photo_path ) ) {
-        $wp_attachment['post_mime_type'] = $info['type'];
-      } else {
-        printf("Error fetching photo mime type for el_id %d \n", $el_photo["el_id"]);
-        continue;
-      }
-
-      #extract photo name for title
-      $post_title = basename( $el_photo['el_photo'] );
-      $post_title = explode(".",$post_title);
-      if ( !isset( $post_title[0] ) ) {
-        $post_title = '';
-      } else {
-        $wp_attachment['post_title']  = $post_title[0];
-      }
-
-      #fill in required fields
-      $wp_attachment['post_content'] = '';
-      $wp_attachment['post_status'] = 'publish';
-
-      $upload_time = strtotime($el_photo['el_pub_date']);
-      $wp_attachment['post_date'] = date('Y-m-d H:i:s', $upload_time);
-      $wp_attachment['post_date_gmt'] = $wp_attachment['post_date'];
-
-      $wp_attachment['post_excerpt'] = $el_photo['el_caption'];
-
-
-       
-      #attempt to find an author in the users table 
-      $first_name =  array_key_exists("el_photographer_first_name", $el_photo) ? trim($el_photo["el_photographer_first_name"]) : "";
-      $last_name =  array_key_exists("el_photographer_last_name", $el_photo)  ? trim($el_photo["el_photographer_last_name"]) : "";
-      $authors = Db::find("wp_user", array("true_user" => false,
-                                           "first_name" => $first_name, 
-                                           "last_name" =>  $last_name),
-                                     array("limit" => 1) );
-      if ($authors->count() == 1) {
-        $author = $authors->getNext();
-        $wp_attachment['post_author'] = $author["wp_id"];
-      }
-      #insert!
-      $wp_attachment_id = wp_insert_attachment( $wp_attachment, $photo_path );
-      wp_update_attachment_metadata( $wp_attachment_id, wp_generate_attachment_metadata( $wp_attachment_id, $photo_path ) );
-
-      #if there's no author assigned but there's a one off byline, create it as a meta field
-      if (array_key_exists("el_one_off_photographer", $el_photo) && !array_key_exists("post_author", $wp_attachment) ) {
-        update_post_meta($wp_attachment_id, 'MEDIA_CREDIT_POSTMETA_KEY', $el_photo["el_one_off_photographer"] );
-      }
-
-      #record the old ellington ID just in case anything ever goes wrong
-      update_post_meta( $wp_attachment_id, EL_META_PREFIX . "id", $el_photo["el_id"] );
-      
-      #send the WP_ID back to mongo
-      $el_photo["wp_id"] = $wp_attachment_id;
-      Db::save("photo",$el_photo);
-
+      import_specific_photo( $el_photo );
     }
   }
+
+  function import_specific_photo( $el_photo, $wp_attachment_parent = 0 ) {
+    $wp_attachment = Array(); //container we'll fill in with data
+
+    #Figure out if the file is in the file system. Fetch relevant file info if so
+    #If not, grab it from Ellington
+    $photo_path = $this->legacy_media_base_path . $el_photo["el_photo"];
+    if ( file_exists($photo_path) ) {
+      //grab metadata
+      $wp_attachment['guid'] = $wp_media_base_url . $el_photo["el_photo"];
+    } else {
+      //attempt to fetch the photo from the Ellington media server
+      $el_url = EL_BASE_MEDIA_URL . $el_photo["el_photo"];
+      $upload = $this->fetch_remote_file($el_url, $el_photo);
+    
+      if ( is_wp_error( $upload ) ) {
+        printf("Error fetching photo for el_id %d <br>", $el_photo["el_id"]);
+        return new WP_Error("import_specific_photo_error", "Error importing photo" );
+      }
+
+      $photo_path = $upload['file'];
+      $wp_attachment['guid'] = $upload['url'];
+    }
+    #grab filedata
+    
+    if ( $info = wp_check_filetype( $photo_path ) ) {
+      $wp_attachment['post_mime_type'] = $info['type'];
+    } else {
+      printf("Error fetching photo mime type for el_id %d <br>", $el_photo["el_id"]);
+      return new WP_Error("import_specific_photo_error", "Error importing photo" );
+    }
+
+    #extract photo name for title
+    $post_title = basename( $el_photo['el_photo'] );
+    $post_title = explode(".",$post_title);
+    if ( !isset( $post_title[0] ) ) {
+      $post_title = '';
+    } else {
+      $wp_attachment['post_title']  = $post_title[0];
+    }
+
+    #fill in required fields
+    $wp_attachment['post_content'] = '';
+    $wp_attachment['post_status'] = 'publish';
+
+    $upload_time = strtotime($el_photo['el_pub_date']);
+    $wp_attachment['post_date'] = date('Y-m-d H:i:s', $upload_time);
+    $wp_attachment['post_date_gmt'] = $wp_attachment['post_date'];
+
+    $wp_attachment['post_excerpt'] = $el_photo['el_caption'];
+
+
+     
+    #attempt to find an author in the users table 
+    $first_name =  array_key_exists("el_photographer_first_name", $el_photo) ? trim($el_photo["el_photographer_first_name"]) : "";
+    $last_name =  array_key_exists("el_photographer_last_name", $el_photo)  ? trim($el_photo["el_photographer_last_name"]) : "";
+    $authors = Db::find("wp_user", array("true_user" => false,
+                                         "first_name" => $first_name, 
+                                         "last_name" =>  $last_name),
+                                   array("limit" => 1) );
+    if ($authors->count() == 1) {
+      $author = $authors->getNext();
+      $wp_attachment['post_author'] = $author["wp_id"];
+    }
+    #insert!
+    $wp_attachment_id = wp_insert_attachment( $wp_attachment, $photo_path, $wp_attachment_parent );
+    wp_update_attachment_metadata( $wp_attachment_id, wp_generate_attachment_metadata( $wp_attachment_id, $photo_path ) );
+
+    #if there's no author assigned but there's a one off byline, create it as a meta field
+    if (array_key_exists("el_one_off_photographer", $el_photo) && !array_key_exists("post_author", $wp_attachment) ) {
+      update_post_meta($wp_attachment_id, MEDIA_CREDIT_POSTMETA_KEY, $el_photo["el_one_off_photographer"] );
+    }
+
+    #record the old ellington ID just in case anything ever goes wrong
+    update_post_meta( $wp_attachment_id, EL_META_PREFIX . "id", $el_photo["el_id"] );
+    
+    #send the WP_ID back to mongo
+    $el_photo["wp_id"] = $wp_attachment_id;
+    Db::save("photo",$el_photo);
+
+    return $wp_attachment_id;
+  }
+
 
   function import_users() {
     $this->mongo_connect();
@@ -202,16 +210,21 @@ class YDN_Importer {
       //send ID back to mongo
       $m_user["wp_id"] = $wp_id;
       Db::save("wp_user",$m_user);
+
+      return $wp_id;
     }
   } 
 
   function import_galleries() {
+    #creates the galleries in this site AND imports the photos associated with them.  This will potentially create duplicates
+    #in the database, but the problem should be relatively localized.  Run this before import_photos so that we don't accidentally
+    #overwrite the wp_ids destined to be linked into the story import
     $this->mongo_connect();
 
-    $showcase_defaults = Array( "source" => "upload",
+    $showcase_default_opts = Array( "source" => "upload",
                                 "source_gallery" => "",
                                 "flickr_id" => "",
-                                "gallery_layour" => "",
+                                "gallery_layout" => "",
                                 "enable_lightbox" => "on",
                                 "show_slideshow" => "off",
                                 "dim_x" => "",
@@ -235,7 +248,45 @@ class YDN_Importer {
                                 "slider_pause_action" => "on",
                                 "slider_pause_hover" => "off"
                               );
-   $galleries = Db::find("gallery", array("wp_sites" => $this->current_size), array("limit" => 1) );
+   $galleries = Db::find("gallery", array("wp_sites" => $this->current_site), array("limit" => 1) );
+   foreach ($galleries as $gallery) {
+     #first create the showcase post in the WP databse
+     $wp_gallery = Array( "post_title" => $gallery["el_name"],
+                          "post_status" => "publish",
+                          "post_type" => "showcase_gallery",
+                        );
+     $creation_time = strtotime($gallery['el_creation_date']);
+     $wp_gallery['post_date'] = date('Y-m-d H:i:s', $creation_time);
+     $wp_gallery["post_date_gmt"] = $wp_gallery["post_date"];
+
+     $wp_gallery_id = wp_insert_post( $wp_gallery );
+     update_post_meta( $wp_gallery_id, 'showcase_settings', $showcase_default_opts );
+
+     #save that new ID in the mongo set
+     $gallery["wp_id"] = $wp_gallery_id;
+     Db::save("gallery",$gallery);
+
+     #loop through the member photos and import them into the gallery 
+     $gallery_photos = Db::find("galleryphoto", array("el_gallery_id" => $gallery["el_id"] ), array() );
+     foreach ($gallery_photos as $gallery_photo) {
+         //for some reason, the $gallery_photo object isn't actually the photo, but contains a pointer to it.
+         //find the real record.
+        $photo_record = Db::find("photo", array("el_id" => $gallery_photo["el_photo_id"] ), array("limit" => 1) ); 
+        $photo_record = $photo_record->getNext();
+
+        #now actually import and wire everything up
+        $gallery_photo_id = $this->import_specific_photo($photo_record, $wp_gallery_id);
+
+        if ( is_wp_error( $gallery_photo_id ) ) { continue; }
+
+        $meta = wp_get_attachment_metadata($gallery_photo_id);
+        $meta['wp_showcase'] = array ( "caption" => $photo_record["el_caption"],
+                                       "alt" => $photo_record["el_caption"],
+                                       "link" => "" );
+
+        wp_update_attachment_metadata( $gallery_photo_id , $meta );
+      }
+    }
 
   }
 	/**
