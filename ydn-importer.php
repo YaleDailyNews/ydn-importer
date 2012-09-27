@@ -54,7 +54,7 @@ class YDN_Importer {
     //TODO: SET THE SITE HERE
 
     #first set some variables
-    $legacy_photo_prefix = "/legacy/";
+    $legacy_photo_prefix = "/legacy/media/";
     $wp_upload_dir = wp_upload_dir();
     $this->legacy_media_base_path = $wp_upload_dir["basedir"] . $legacy_photo_prefix;
     $this->wp_media_base_url =  $wp_upload_dir["baseurl"] . $legacy_photo_prefix;
@@ -62,7 +62,7 @@ class YDN_Importer {
     #next run the tasks
     //the ordering of these tasks is NOT arbitrary. Think about cascading dependencies etc very carefully
     $this->mongo_connect();
-    $this->import_galleries();
+   # $this->import_galleries();
     $this->import_videos();
    # $this->import_photos(); 
 
@@ -70,21 +70,29 @@ class YDN_Importer {
 
   function import_photos() {
     $this->mongo_connect();
-    $photos = Db::find("photo", array("wp_sites" => $this->current_site), array("limit" => 1) );
+    $photos = Db::find("photo", array("wp_sites" => $this->current_site), array("limit" => 100) );
     foreach ($photos as $el_photo) {
-      import_specific_photo( $el_photo );
+      $this->import_specific_photo( $el_photo );
     }
   }
 
   function import_specific_photo( $el_photo, $wp_attachment_parent = 0 ) {
+    /* specify some defaults for $el_photo */
+    $el_photo_defaults = Array(
+      'el_photo' => '',
+      'el_id' => -1,
+      'el_pub_date' => '',
+      'el_caption' => '');
+    $el_photo = wp_parse_args($el_photo, $el_photo_defaults);
+
     $wp_attachment = Array(); //container we'll fill in with data
 
     #Figure out if the file is in the file system. Fetch relevant file info if so
     #If not, grab it from Ellington
     $photo_path = $this->legacy_media_base_path . $el_photo["el_photo"];
-    if ( file_exists($photo_path) ) {
+    if ( Db::count("media_ents", array("path" => $el_photo["el_photo"]) ) == 1 ) {
       //grab metadata
-      $wp_attachment['guid'] = $wp_media_base_url . $el_photo["el_photo"];
+      $wp_attachment['guid'] = $this->wp_media_base_url . $el_photo["el_photo"];
     } else {
       //attempt to fetch the photo from the Ellington media server
       $el_url = EL_BASE_MEDIA_URL . $el_photo["el_photo"];
@@ -141,7 +149,7 @@ class YDN_Importer {
     }
     #insert!
     $wp_attachment_id = wp_insert_attachment( $wp_attachment, $photo_path, $wp_attachment_parent );
-    wp_update_attachment_metadata( $wp_attachment_id, wp_generate_attachment_metadata( $wp_attachment_id, $photo_path ) );
+    #wp_update_attachment_metadata( $wp_attachment_id, wp_generate_attachment_metadata( $wp_attachment_id, $photo_path ) ); #can't actually read the files
 
     #if there's no author assigned but there's a one off byline, create it as a meta field
     if (array_key_exists("el_one_off_photographer", $el_photo) && !array_key_exists("post_author", $wp_attachment) ) {
@@ -158,6 +166,14 @@ class YDN_Importer {
     return $wp_attachment_id;
   }
 
+  function generate_wp_username($first_name, $last_name ) {
+    $user_login = sprintf("%s %s",$first_name, $last_name);
+    $user_login = preg_replace('/\s+/','',$user_login); //get rid of any spaces
+    $user_login = iconv("UTF-8","ASCII//TRANSLIT", $user_login); //get rid of any weird non ascii characters if possible
+    $user_login = strtolower($user_login); //downcase it
+
+    return $user_login;
+  }
 
   function import_users() {
     $this->mongo_connect();
@@ -177,11 +193,8 @@ class YDN_Importer {
         //build users for the authors
         $wp_user["display_name"] = sprintf("%s %s",$m_user["first_name"], $m_user["last_name"]);
 
-        $user_login = $wp_user["display_name"];
-        $user_login = preg_replace('/\s+/','',$user_login); //get rid of any spaces
-        $user_login = iconv("UTF-8","ASCII//TRANSLIT", $user_login); //get rid of any weird non ascii characters if possible
-        $user_login = strtolower($user_login); //downcase it
-        $wp_user["user_login"] = $user_login;
+    
+        $wp_user["user_login"] = generate_wp_username($m_user["first_name"], $m_user["last_name"]);
 
         $wp_user["first_name"] = $m_user["first_name"];
         $wp_user["last_name"] = $m_user["last_name"];
@@ -292,7 +305,28 @@ class YDN_Importer {
   }
 
   function import_videos() {
+    $videos = Db::find("video", array("wp_site" => $this->current_site ), array("limit" => 1) );
+    foreach ( $videos as $el_video ) {
+      printf("this is run\n");
+      $creation_time = strtotime($el_video["el_creation_date"]);
 
+      #first insert the video post
+      $wp_video = array(
+         'comment_status' => 'open',
+         'post_content' => sprintf("%s\n\n%s", $el_video["el_url"], $el_video["el_caption"]),
+         'post_title' => $el_video["el_title"],
+         'post_date' => date('Y-m-d H:i:s', $creation_time),
+         'post_date_gmt' => date('Y-m-d H:i:s', $creation_time),
+         'post_status' => 'publish',
+         'post_type' => 'video'
+       );
+
+      $wp_post_id = wp_insert_post($wp_video);
+    }
+
+  }
+
+  function register_author_for_post($post_id, $author_username) {
 
   }
 	/**
