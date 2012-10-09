@@ -306,6 +306,7 @@ class YDN_Importer {
 
   function import_videos() {
     $videos = Db::find("video", array("wp_site" => $this->current_site ), array("limit" => 1) );
+    printf("hiasdkfjlsdf");
     foreach ( $videos as $el_video ) {
       printf("this is run\n");
       $creation_time = strtotime($el_video["el_creation_date"]);
@@ -322,13 +323,46 @@ class YDN_Importer {
        );
 
       $wp_post_id = wp_insert_post($wp_video);
+      register_authors_for_post($wp_post_id, $el_video["computed_bylines"]);
     }
 
-  }
-
-  function register_author_for_post($post_id, $author_username) {
 
   }
+
+  /***
+   * Adds $authors to $post_id in the coauthors_plus taxonomy.
+   *
+   * $authors is an array of first and last name pairs.  These
+   * will be converted into usernames and run through the importer. 
+   *
+   */
+  function register_author_for_post($post_id, $authors) {
+    global $coauthors_plus;
+    $coauthors = Array();
+
+    if (empty($authors)) { 
+      return;
+    }
+  
+    foreach($authors as $author) {
+      //generate_wp_username accepts firstname/lastname, but then just concatenates
+      $coauthors[] = sanitize_user(generate_wp_username($author['first_name'],$author['last_name'])); 
+    }
+
+    $coauthors_plus->add_coauthors($post_id, $coauthors);
+  }
+
+  /***
+   * Adds $categories to $post_id.
+   *
+   * $categories are tuples from the data processing script 
+   *
+   */
+  function register_categories_for_post($post_id, $categories) {
+
+
+  }
+
 	/**
 	 * Attempt to download a remote file attachment
 	 *
