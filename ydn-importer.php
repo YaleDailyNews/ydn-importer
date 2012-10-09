@@ -63,14 +63,15 @@ class YDN_Importer {
     //the ordering of these tasks is NOT arbitrary. Think about cascading dependencies etc very carefully
     $this->mongo_connect();
    # $this->import_galleries();
-    $this->import_videos();
-   # $this->import_photos(); 
+   # $this->import_videos();
+     $this->import_photos(); 
+   #  $this->import_stories(); 
 
   }
 
   function import_photos() {
     $this->mongo_connect();
-    $photos = Db::find("photo", array("wp_sites" => $this->current_site), array("limit" => 100) );
+    $photos = Db::find("photo", array("wp_sites" => $this->current_site), array() );
     foreach ($photos as $el_photo) {
       $this->import_specific_photo( $el_photo );
     }
@@ -194,13 +195,13 @@ class YDN_Importer {
         $wp_user["display_name"] = sprintf("%s %s",$m_user["first_name"], $m_user["last_name"]);
 
     
-        $wp_user["user_login"] = generate_wp_username($m_user["first_name"], $m_user["last_name"]);
+        $wp_user["user_login"] = $this->generate_wp_username($m_user["first_name"], $m_user["last_name"]);
 
         $wp_user["first_name"] = $m_user["first_name"];
         $wp_user["last_name"] = $m_user["last_name"];
 
         $wp_user["role"] = "author";
-        printf("working on %s <br>",$user_login);
+        printf("working on %s <br>",$wp_user["user_login"]);
       }
 
       //these passwords wont be used until the user logs in, triggering their legacy password to be converted
@@ -209,14 +210,26 @@ class YDN_Importer {
 
       //both types of users have to get inserted into the WP database and then send their
       //ID back to mongo
-      if ( username_exists( $wp_user["user_login"] )) { 
-        printf("Error creating user (name collision):%s<br>", $wp_user['user_login']);
-        continue;
+      $old_user = get_user_by('login', $wp_user["user_login"]);
+      
+      if ($old_user && $wp_user["user_login"] != "yaledailynews") { 
+        //perform an update if we have better info
+        if ( (empty($old_user->first_name) ||  empty($old_user->last_name)) &&
+             (!empty($wp_user["first_name"]) && !empty($wp_user["last_name"]))  ) {
+           //if one of f/last name currently in the DB are problematic AND
+           //both the first/last name fields in the current record are good,
+           //then import
+          $wp_user["ID"] = $old_user->ID;
+         } else {
+               continue;
+         }
+
       }
 
+      //perform a regular insert
       $wp_id = wp_insert_user($wp_user);
 
-      //add password meta if necessary
+      //add password meta if necessary (don't do in update case; true users will never be updated)
       if ($m_user["true_user"] && $m_user["legacy_password"] != "" ) {
         add_user_meta($wp_id, "ydn_legacy_password", $m_user["legacy_password"], true);
       }
@@ -224,8 +237,6 @@ class YDN_Importer {
       //send ID back to mongo
       $m_user["wp_id"] = $wp_id;
       Db::save("wp_user",$m_user);
-
-      return $wp_id;
     }
   } 
 
@@ -304,11 +315,33 @@ class YDN_Importer {
 
   }
 
+  /***
+   * Adds $authors to $post_id in the coauthors_plus taxonomy.
+   *
+   * $authors is an array of first and last name pairs.  These
+   * will be converted into usernames and run through the importer. 
+   *
+   */
+  function register_authors_for_post($post_id, $authors) {
+    global $coauthors_plus;
+    $coauthors = Array();
+
+    if (empty($authors)) { 
+      return;
+    }
+  
+    foreach($authors as $author) {
+      //generate_wp_username accepts firstname/lastname, but then just concatenates
+      $coauthors[] = sanitize_user($this->generate_wp_username($author['first_name'],$author['last_name'])); 
+    }
+
+    $coauthors_plus->add_coauthors($post_id, $coauthors);
+  }
+
+
   function import_videos() {
-    $videos = Db::find("video", array("wp_site" => $this->current_site ), array("limit" => 1) );
-    printf("hiasdkfjlsdf");
+    $videos = Db::find("video", array("wp_site" => $this->current_site ), array() );
     foreach ( $videos as $el_video ) {
-      printf("this is run\n");
       $creation_time = strtotime($el_video["el_creation_date"]);
 
       #first insert the video post
@@ -323,35 +356,61 @@ class YDN_Importer {
        );
 
       $wp_post_id = wp_insert_post($wp_video);
-      register_authors_for_post($wp_post_id, $el_video["computed_bylines"]);
+      $this->register_authors_for_post($wp_post_id, $el_video["computed_bylines"]);
+      print_r($el_video["wp_categories"]);
+
+     #save that new ID in the mongo set
+     $el_video["wp_id"] = $wp_post_id;
+     Db::save("video",$el_video);
     }
 
 
   }
 
-  /***
-   * Adds $authors to $post_id in the coauthors_plus taxonomy.
-   *
-   * $authors is an array of first and last name pairs.  These
-   * will be converted into usernames and run through the importer. 
-   *
+  /**
+   * Imports stories for current site
    */
-  function register_author_for_post($post_id, $authors) {
-    global $coauthors_plus;
-    $coauthors = Array();
+  function import_stories() {
+    $stories = Db::find("story", array("wp_site" => $this->current_site), array("limit" => 1) ); 
+    foreach ($stories as $el_story) {
+      $pub_time = strtotime($el_story["el_pub_date"]);
+      $update_time = strtotime($el_story["el_update_date"]);
+      assert( $pub_time >= $update_time );
 
-    if (empty($authors)) { 
-      return;
-    }
-  
-    foreach($authors as $author) {
-      //generate_wp_username accepts firstname/lastname, but then just concatenates
-      $coauthors[] = sanitize_user(generate_wp_username($author['first_name'],$author['last_name'])); 
-    }
+      $creation_time = $pub_time; 
 
-    $coauthors_plus->add_coauthors($post_id, $coauthors);
+      $wp_story = array(
+        'comment_status' => 'open',
+        'post_content' => $el_story['el_story'],
+        'post_date' => date('Y-m-d H:i:s', $creation_time),
+        'post_date_gmt' => date('Y-m-d H:i:s', $creation_time),
+        'post_status' => 'publish',
+        'post_type' => 'post',
+        'post_title' => $el_story['el_headline'],
+        );
+
+      $wp_post_id = wp_insert_post($wp_story);
+      $this->register_authors_for_post($wp_post_id, $el_story["computed_bylines"]);
+
+      if (array_key_exists( 'el_one_off_byline', $el_story) && !empty($el_story['el_one_off_byline'])) {
+        #import the one off byline text into the custom field
+        add_post_meta($wp_post_id, 'ydn_reporter_type', $el_story['el_one_off_byline'], false);
+      }
+
+      if (array_key_exists( 'el_lead_photo_id', $el_story) && !empty($el_story['el_lead_photo_id'])) {
+        $lead_photo = Db::find("photo", array("photo", array("el_id" => $el_story['el_lead_photo_id']) ), array() );
+        $lead_photo = $lead_photo->getNext();
+        if (!empty($lead_photo)) {
+          add_post_meta($wp_post_id, '_thumbnail_id',$lead_photo["wp_id"], true);
+        }
+      }
+
+      #save that new ID in the mongo set
+      $el_story["wp_id"] = $wp_post_id;
+      Db::save("story",$el_story);
+
+    }
   }
-
   /***
    * Adds $categories to $post_id.
    *
@@ -359,8 +418,7 @@ class YDN_Importer {
    *
    */
   function register_categories_for_post($post_id, $categories) {
-
-
+    
   }
 
 	/**

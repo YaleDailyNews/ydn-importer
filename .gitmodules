@@ -1,0 +1,3 @@
+[submodule "simplemongophp"]
+	path = simplemongophp
+	url = https://github.com/ibwhite/simplemongophp.git
