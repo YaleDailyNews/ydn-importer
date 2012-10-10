@@ -1,13 +1,4 @@
 <?php
-/*
-Plugin Name:YDN Importer
-Plugin URI: http://yaledailynews.com
-Description: Import posts, pages, comments, custom fields, categories, tags and more from a WordPress export file.
-Author: Michael DiScala
-Author URI: http://michaeldiscala.com/
-Version: 0.1
-*/
-
 /** Display verbose errors */
 include('simplemongophp/Db.php');
 
@@ -29,14 +20,13 @@ class YDN_Importer {
     }
   }
 
-  function show_page() {
+  function __construct($target) {
     set_time_limit(0);
-    if ( ! isset( $_GET["target_site"] ) ):
-   ?>Load this page with ?target_site=SLUG to import a specific website. Load with ?target_site=users to import users.<?
-    elseif ( $_GET["target_site"] == "users" ):
+
+    if ( $target == "users" ):
       $this->import_users();
     else:
-      $this->current_site = $_GET["target_site"];
+      $this->current_site = $target;
       if ($this->current_site != "weekend" &&
           $this->current_site != "main" &&
           $this->current_site != "cross_campus" &&
@@ -45,7 +35,6 @@ class YDN_Importer {
 
       $this->start_site_import();
     endif;
-      
 
   }
 
@@ -65,6 +54,7 @@ class YDN_Importer {
    # $this->import_galleries();
    # $this->import_videos();
      $this->import_photos(); 
+     wp_cache_flush();
     # $this->import_stories(); 
 
   }
@@ -78,7 +68,8 @@ class YDN_Importer {
   }
 
   function import_specific_photo( $el_photo, $wp_attachment_parent = 0 ) {
-    printf("Beginning import of %s<br>",$el_photo["el_photo"]);
+    wp_cache_flush();
+    printf("Beginning import of %s\n",$el_photo["el_photo"]);
     /* specify some defaults for $el_photo */
     $el_photo_defaults = Array(
       'el_photo' => '',
@@ -101,7 +92,7 @@ class YDN_Importer {
       $upload = $this->fetch_remote_file($el_url, $el_photo);
     
       if ( is_wp_error( $upload ) ) {
-        printf("Error fetching photo for el_id %d <br>", $el_photo["el_id"]);
+        printf("Error fetching photo for el_id %d \n>", $el_photo["el_id"]);
         return new WP_Error("import_specific_photo_error", "Error importing photo" );
       }
 
@@ -113,7 +104,7 @@ class YDN_Importer {
     if ( $info = wp_check_filetype( $photo_path ) ) {
       $wp_attachment['post_mime_type'] = $info['type'];
     } else {
-      printf("Error fetching photo mime type for el_id %d <br>", $el_photo["el_id"]);
+      printf("Error fetching photo mime type for el_id %d \n", $el_photo["el_id"]);
       return new WP_Error("import_specific_photo_error", "Error importing photo" );
     }
 
@@ -165,7 +156,7 @@ class YDN_Importer {
     $el_photo["wp_id"] = $wp_attachment_id;
     Db::save("photo",$el_photo);
 
-    printf("Imported %s as %d<br>",$el_photo["el_photo"], $wp_attachment_id);
+    printf("Imported %s as %d\n",$el_photo["el_photo"], $wp_attachment_id);
     return $wp_attachment_id;
   }
 
@@ -203,7 +194,7 @@ class YDN_Importer {
         $wp_user["last_name"] = $m_user["last_name"];
 
         $wp_user["role"] = "author";
-        printf("working on %s <br>",$wp_user["user_login"]);
+        printf("working on %s \n",$wp_user["user_login"]);
       }
 
       //these passwords wont be used until the user logs in, triggering their legacy password to be converted
@@ -375,6 +366,7 @@ class YDN_Importer {
   function import_stories() {
     $stories = Db::find("story", array("wp_site" => $this->current_site), array("limit" => 2000) ); 
     foreach ($stories as $el_story) {
+      wp_cache_flush();
       $pub_time = strtotime($el_story["el_pub_date"]);
       $update_time = strtotime($el_story["el_update_date"]);
       assert( $pub_time >= $update_time );
@@ -433,7 +425,7 @@ class YDN_Importer {
       if(count($obj) != 3) {
         //malformatted entry
         print_r($obj);
-        printf("malformatted tag. wtf? (see above)<br>");
+        printf("malformatted tag. wtf? (see above)\n");
         continue;
       }
 
@@ -449,7 +441,7 @@ class YDN_Importer {
         //register if necessary, add to post
         $this->register_tag_for_post($post_id, $name);
       } else {
-        printf("Invalid type: %s<br>", $type);
+        printf("Invalid type: %s\n", $type);
         continue;
       }
     }
@@ -497,7 +489,7 @@ class YDN_Importer {
         $final_terms = array_unique($final_terms);
         $result = wp_set_object_terms($post_id, $final_terms, 'category'); 
         if(is_wp_error($result)) {
-          printf("Error adding category %s to %d<br>",$post_id,$name);
+          printf("Error adding category %s to %d\n",$post_id,$name);
         }
   }
 
@@ -567,13 +559,4 @@ class YDN_Importer {
  
 };
 
-
-function ydn_importer_init() {
-    $GLOBALS['ydn_importer'] = new YDN_Importer();
-
-    add_menu_page( "YDN Importer", "YDN Importer", "update_core", 
-                   "ydn-importer", array($GLOBALS['ydn_importer'], 'show_page' ) );
-}
-
-add_action( 'admin_menu', 'ydn_importer_init');
 ?>
