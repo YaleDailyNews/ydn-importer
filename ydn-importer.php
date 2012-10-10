@@ -65,7 +65,7 @@ class YDN_Importer {
    # $this->import_galleries();
    # $this->import_videos();
      $this->import_photos(); 
-   #  $this->import_stories(); 
+    # $this->import_stories(); 
 
   }
 
@@ -78,6 +78,7 @@ class YDN_Importer {
   }
 
   function import_specific_photo( $el_photo, $wp_attachment_parent = 0 ) {
+    printf("Beginning import of %s<br>",$el_photo["el_photo"]);
     /* specify some defaults for $el_photo */
     $el_photo_defaults = Array(
       'el_photo' => '',
@@ -164,6 +165,7 @@ class YDN_Importer {
     $el_photo["wp_id"] = $wp_attachment_id;
     Db::save("photo",$el_photo);
 
+    printf("Imported %s as %d<br>",$el_photo["el_photo"], $wp_attachment_id);
     return $wp_attachment_id;
   }
 
@@ -371,7 +373,7 @@ class YDN_Importer {
    * Imports stories for current site
    */
   function import_stories() {
-    $stories = Db::find("story", array("wp_site" => $this->current_site), array("limit" => 1) ); 
+    $stories = Db::find("story", array("wp_site" => $this->current_site), array("limit" => 2000) ); 
     foreach ($stories as $el_story) {
       $pub_time = strtotime($el_story["el_pub_date"]);
       $update_time = strtotime($el_story["el_update_date"]);
@@ -401,8 +403,12 @@ class YDN_Importer {
         $lead_photo = Db::find("photo", array("photo", array("el_id" => $el_story['el_lead_photo_id']) ), array() );
         $lead_photo = $lead_photo->getNext();
         if (!empty($lead_photo)) {
-          add_post_meta($wp_post_id, '_thumbnail_id',$lead_photo["wp_id"], true);
+          add_post_meta($wp_post_id, '_thumbnail_id',$lead_photo["wp_id"]);
         }
+      }
+
+      if (array_key_exists('wp_categories', $el_story) && !empty($el_story['wp_categories'])) {
+        $this->register_categories_for_post($wp_post_id, $el_story['wp_categories']);
       }
 
       #save that new ID in the mongo set
@@ -418,7 +424,97 @@ class YDN_Importer {
    *
    */
   function register_categories_for_post($post_id, $categories) {
-    
+    if (!is_array($categories) || empty($categories)) {
+      return;
+    }
+
+    //categories is a bad name--it can be a category or a tag
+    foreach($categories as $obj) {
+      if(count($obj) != 3) {
+        //malformatted entry
+        print_r($obj);
+        printf("malformatted tag. wtf? (see above)<br>");
+        continue;
+      }
+
+      $type = $obj[0];
+      $name = $obj[1];
+      $site = $obj[2];
+
+      if($site != $this->current_site) { continue; } 
+
+      if($type == "cat")  {
+        $this->register_category_for_post($post_id, $name);
+      } else if ($type == "tag") { 
+        //register if necessary, add to post
+        $this->register_tag_for_post($post_id, $name);
+      } else {
+        printf("Invalid type: %s<br>", $type);
+        continue;
+      }
+    }
+  }
+  
+  function register_tag_for_post($post_id, $name) {
+    $term = term_exists($name, 'post_tag');
+    if($term == null || $term == 0) {
+      $term = wp_insert_term($name, 'post_tag', array('description' => '', 'slug' => sanitize_title($name)));
+    }
+
+    wp_set_object_terms($post_id, $term['term_id'], 'post_tag', true);
+  }
+
+
+  //adds name to post id. if name is a hierarchical category (separated by ":")
+  //then it builds the parent as well
+  function register_category_for_post($post_id, $name) {
+      //do the formatting, register if necessary, add to post
+        $exploded_name = explode(":", $name);
+
+        //setup the $parent pointer
+        if(count($exploded_name) > 1) {
+          //make sure it's parent is good, before adding the child
+          $parent = $exploded_name[0];
+          $parent = $this->get_cat_id($parent, null);
+          $name = $exploded_name[1]; //the prefix is the parent, index 1 is the rest of the name
+        } else {
+          $parent = null;
+        }
+
+        //at this point, we're either sure the parent is setup properly,
+        //or it's not hierarchical
+        $final_terms = array($this->get_cat_id($name, $parent)); //this is the list of terms that will be set at the end
+
+        //loop through current terms, adding them to our final_terms list if they're not uncategorized
+        foreach(wp_get_object_terms($post_id, 'category') as $cur_term) {
+          if($cur_term->term_id != 1) {
+            //if it's not uncategorized keep it
+            $final_terms[] = $cur_term->term_id;
+          }
+        }
+
+        $final_terms = array_map('intval', $final_terms);
+        $final_terms = array_unique($final_terms);
+        $result = wp_set_object_terms($post_id, $final_terms, 'category'); 
+        if(is_wp_error($result)) {
+          printf("Error adding category %s to %d<br>",$post_id,$name);
+        }
+  }
+
+
+  //If the specified category exists, it returns its ID
+  //Otherwise, create the category and return its IDs (doesn't create any hierarchy values etc)
+  function get_cat_id($name, $parent) {
+        $term = term_exists($name, 'category');
+        if ($term == 0 || $term == null) {
+          //need to create the term
+          $term_opts = array('description' => '',
+                             'slug' => sanitize_title($name) );
+          if($parent != null) { $term_opts['parent'] = $parent; }
+          $term =  wp_insert_term( $name, 'category', $term_opts);
+        } 
+        
+        return $term['term_id'];
   }
 
 	/**
