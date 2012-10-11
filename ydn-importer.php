@@ -34,6 +34,7 @@ class YDN_Importer {
          ) { die('Invalid site, bro.'); }
 
       $this->start_site_import();
+      $this->import_cleanup();
     endif;
 
   }
@@ -53,10 +54,18 @@ class YDN_Importer {
     $this->mongo_connect();
    # $this->import_galleries();
    # $this->import_videos();
-     $this->import_photos(); 
+   #   $this->import_photos(); 
      wp_cache_flush();
-    # $this->import_stories(); 
+     $this->import_stories(); 
 
+  }
+
+  function import_cleanup() {
+        wp_cache_flush();
+        foreach ( get_taxonomies() as $tax ) {
+          delete_option( "{$tax}_children" );
+          _get_term_hierarchy( $tax );
+        }
   }
 
   function import_photos() {
@@ -325,9 +334,16 @@ class YDN_Importer {
   
     foreach($authors as $author) {
       //generate_wp_username accepts firstname/lastname, but then just concatenates
-      $coauthors[] = sanitize_user($this->generate_wp_username($author['first_name'],$author['last_name'])); 
+      $name =  sanitize_user($this->generate_wp_username($author['first_name'],$author['last_name'])); 
+      $coauthors[] = $name;
     }
 
+    //coauthors requires an author to be set
+    $author = $coauthors[0];
+    if( $author ) {
+      $author_data = get_user_by( 'login', $author );
+      wp_update_post(array("post_author" => $author_data->ID, "ID" => $post_id));
+    }
     $coauthors_plus->add_coauthors($post_id, $coauthors);
   }
 
@@ -364,14 +380,17 @@ class YDN_Importer {
    * Imports stories for current site
    */
   function import_stories() {
-    $stories = Db::find("story", array("wp_site" => $this->current_site), array("limit" => 2000) ); 
+    $stories = Db::find("story", array("wp_site" => $this->current_site, "el_status" => "1"), array("limit" => 1000) ); 
     foreach ($stories as $el_story) {
       wp_cache_flush();
+      printf("Importing ID %d\n",$el_story["el_id"]);
       $pub_time = strtotime($el_story["el_pub_date"]);
       $update_time = strtotime($el_story["el_update_date"]);
-      assert( $pub_time >= $update_time );
-
-      $creation_time = $pub_time; 
+      if ($pub_time >= $update_time) {
+        $creation_time = $pub_time; 
+      } else {
+        $creation_time = $update_time;
+      }
 
       $wp_story = array(
         'comment_status' => 'open',
@@ -391,8 +410,8 @@ class YDN_Importer {
         add_post_meta($wp_post_id, 'ydn_reporter_type', $el_story['el_one_off_byline'], false);
       }
 
-      if (array_key_exists( 'el_lead_photo_id', $el_story) && !empty($el_story['el_lead_photo_id'])) {
-        $lead_photo = Db::find("photo", array("photo", array("el_id" => $el_story['el_lead_photo_id']) ), array() );
+      if (array_key_exists( 'el_lead_photo_original_id', $el_story) && !empty($el_story['el_lead_photo_original_id'])) {
+        $lead_photo = Db::find("photo", array("el_id" => $el_story['el_lead_photo_original_id']), array('limit'=>1) );
         $lead_photo = $lead_photo->getNext();
         if (!empty($lead_photo)) {
           add_post_meta($wp_post_id, '_thumbnail_id',$lead_photo["wp_id"]);
@@ -401,6 +420,10 @@ class YDN_Importer {
 
       if (array_key_exists('wp_categories', $el_story) && !empty($el_story['wp_categories'])) {
         $this->register_categories_for_post($wp_post_id, $el_story['wp_categories']);
+      }
+
+      if(in_category("staff-columns",$wp_post_id) && array_key_exists("el_subhead",$el_story) && !empty($el_story["el_subhead"])) {
+        add_post_meta($wp_post_id, 'ydn_opinion_column', $el_story["el_subhead"]);
       }
 
       #save that new ID in the mongo set
@@ -424,7 +447,7 @@ class YDN_Importer {
     foreach($categories as $obj) {
       if(count($obj) != 3) {
         //malformatted entry
-        print_r($obj);
+        var_dump($obj);
         printf("malformatted tag. wtf? (see above)\n");
         continue;
       }
@@ -439,23 +462,13 @@ class YDN_Importer {
         $this->register_category_for_post($post_id, $name);
       } else if ($type == "tag") { 
         //register if necessary, add to post
-        $this->register_tag_for_post($post_id, $name);
+        wp_set_post_tags($post_id, array($name), true);
       } else {
-        printf("Invalid type: %s\n", $type);
         continue;
       }
     }
   }
   
-  function register_tag_for_post($post_id, $name) {
-    $term = term_exists($name, 'post_tag');
-    if($term == null || $term == 0) {
-      $term = wp_insert_term($name, 'post_tag', array('description' => '', 'slug' => sanitize_title($name)));
-    }
-
-    wp_set_object_terms($post_id, $term['term_id'], 'post_tag', true);
-  }
-
 
   //adds name to post id. if name is a hierarchical category (separated by ":")
   //then it builds the parent as well
