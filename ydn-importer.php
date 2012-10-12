@@ -8,11 +8,15 @@ define( 'IMPORT_DEBUG', true );
 define( 'WP_IMPORTING', true );
 define( 'EL_BASE_MEDIA_URL', 'http://yaledailynews.media.clients.ellingtoncms.com/');
 define( 'EL_META_PREFIX', 'ydn_legacy_');
+define( 'SAVEQUERIES', 'false');
+
+              
 
 class YDN_Importer {
 
   public $current_site;
 
+  
   function mongo_connect() {
     if (!isset($this->mongo) ) {
       $this->mongo = new Mongo(MONGODB_IP);
@@ -22,17 +26,21 @@ class YDN_Importer {
 
   function __construct($target) {
     set_time_limit(0);
+    $this->sites_array = array( "main" => 1,
+              "cross-campus" => 2,
+              "weekend" => 3,
+              "magazine" => 4);
+
 
     if ( $target == "users" ):
       $this->import_users();
     else:
-      $this->current_site = $target;
-      if ($this->current_site != "weekend" &&
-          $this->current_site != "main" &&
-          $this->current_site != "cross_campus" &&
-          $this->current_site != "magazine"
-         ) { die('Invalid site, bro.'); }
+      if(!array_key_exists($target,$this->sites_array)) {
+        die("invalid site\n");
+      }
 
+      $this->current_site = $target;
+      $this->set_blog($this->sites_array[$target]);
       $this->start_site_import();
       $this->import_cleanup();
     endif;
@@ -41,8 +49,6 @@ class YDN_Importer {
 
 
   function start_site_import() {
-    //TODO: SET THE SITE HERE
-
     #first set some variables
     $legacy_photo_prefix = "/legacy/media/";
     $wp_upload_dir = wp_upload_dir();
@@ -52,11 +58,10 @@ class YDN_Importer {
     #next run the tasks
     //the ordering of these tasks is NOT arbitrary. Think about cascading dependencies etc very carefully
     $this->mongo_connect();
-   # $this->import_galleries();
-   # $this->import_videos();
-   #   $this->import_photos(); 
-     wp_cache_flush();
-     $this->import_stories(); 
+    $this->import_galleries();
+    $this->import_videos();
+    $this->import_photos(); 
+    $this->import_stories(); 
 
   }
 
@@ -76,9 +81,16 @@ class YDN_Importer {
     }
   }
 
+  /* Imports the el_photo into the wp_database, returning the WP_id associated with the new photo.
+   * If there's a WP_id already associated with the image, then just return that */
   function import_specific_photo( $el_photo, $wp_attachment_parent = 0 ) {
     wp_cache_flush();
     printf("Beginning import of %s\n",$el_photo["el_photo"]);
+    if(array_key_exists("wp_id", $el_photo) && !empty($el_photo["wp_id"]) ) {
+      //we've already imported this! don't do it again
+      return $el_photo["wp_id"];
+    }
+
     /* specify some defaults for $el_photo */
     $el_photo_defaults = Array(
       'el_photo' => '',
@@ -180,9 +192,16 @@ class YDN_Importer {
 
   function import_users() {
     $this->mongo_connect();
-    $m_users = Db::find("wp_user",array("true_user" => false), array());
-    $default_password = wp_generate_password(50,true,true);
+    $m_users = Db::find("wp_user",array("true_user" => false), array("limit" => 500));
+    $default_password = wp_hash_password(wp_generate_password(50,true,true));
+
+    //used for adding user to all the blogs
+    $site_domain = get_blog_details(1);
+    $site_domain = $site_domain->domain;
+
     foreach ($m_users as $m_user) {
+      wp_cache_flush();
+
       $wp_user = array();
       if ( $m_user["true_user"] == 1 ) {
         //import procedure for users from our current users database
@@ -238,6 +257,8 @@ class YDN_Importer {
 
       //send ID back to mongo
       $m_user["wp_id"] = $wp_id;
+
+
       Db::save("wp_user",$m_user);
     }
   } 
@@ -275,7 +296,7 @@ class YDN_Importer {
                                 "slider_pause_action" => "on",
                                 "slider_pause_hover" => "off"
                               );
-   $galleries = Db::find("gallery", array("wp_sites" => $this->current_site), array("limit" => 1) );
+   $galleries = Db::find("gallery", array("wp_sites" => $this->current_site), array() );
    foreach ($galleries as $gallery) {
      #first create the showcase post in the WP databse
      $wp_gallery = Array( "post_title" => $gallery["el_name"],
@@ -402,6 +423,9 @@ class YDN_Importer {
         'post_title' => $el_story['el_headline'],
         );
 
+      $this->replace_slideshow_ids($wp_story['post_content']);
+      $this->replace_photo_inlines($wp_story['post_content']);
+
       $wp_post_id = wp_insert_post($wp_story);
       $this->register_authors_for_post($wp_post_id, $el_story["computed_bylines"]);
 
@@ -426,12 +450,72 @@ class YDN_Importer {
         add_post_meta($wp_post_id, 'ydn_opinion_column', $el_story["el_subhead"]);
       }
 
+
       #save that new ID in the mongo set
       $el_story["wp_id"] = $wp_post_id;
       Db::save("story",$el_story);
 
     }
   }
+
+  /**
+   * Replaces ellington IDs in showcase tags with their real equivalents
+   *
+   * Takes a reference to content so that the replacements can happen against the 
+   * real variable
+   */
+  function replace_slideshow_ids(&$content) {
+    $matches = array();
+    preg_match_all("[showcase el_id=\"([0-9]+)\"]", $content, $matches);
+    if (array_key_exists(1,$matches)) { //1 will be filled with the old IDs if they exist
+        $old_text = $matches[0]; //these are the full strings that we matched
+        $ids = $matches[1]; //these are the old IDS
+        for($index = 0; $index < count($ids); $index++) {
+          //lookup the WP id based on the ellington ID
+          $gallery = Db::find("gallery", array("el_id" => $ids[$index]), array('limit'=>1) );
+          $gallery = $gallery->getNext();
+        
+          if($gallery) {
+            $target = sprintf('/%s/',$old_text[$index]);
+            $replacement = sprintf('showcase id="%s"', $gallery["wp_id"]);
+            $content = preg_replace($target, $replacement, $content);
+          }
+        }
+    }
+  }
+
+  function replace_photo_inlines(&$content) {
+     
+    $matches = array();
+    preg_match_all("/ydn-legacy-photo-inline el_id=\"([0-9]+)\"/", $content, $matches);
+    if (array_key_exists(1,$matches)) { //1 will be filled with the old IDs if they exist
+        $old_text = $matches[0]; //these are the full strings that we matched
+        $ids = $matches[1]; //these are the old IDS
+        for($index = 0; $index < count($ids); $index++) {
+          //lookup the WP id based on the ellington ID
+          $photo = Db::find("photo", array("el_id" => $ids[$index]), array('limit'=>1) );
+          $photo = $photo->getNext();
+        
+          if($photo) {
+            $target = sprintf('/%s/',$old_text[$index]);
+            $replacement = sprintf('ydn-legacy-photo-inline id="%s"', $photo["wp_id"]);
+            $content = preg_replace($target, $replacement, $content);
+          }
+        }
+    }
+  }
+ 
+  /**
+   * Adds comments for a $post_id
+   * 
+   * Only adds comments that are both public and visible.
+   */
+
+  function add_comments_for_story($post_id) {
+    // get all comments from mongo database where :el_object_pk == $post_id
+    // 	
+  }
+
   /***
    * Adds $categories to $post_id.
    *
@@ -457,6 +541,7 @@ class YDN_Importer {
       $site = $obj[2];
 
       if($site != $this->current_site) { continue; } 
+      if($type = "" && $name = "") { continue; } //don't complain about empty ones 
 
       if($type == "cat")  {
         $this->register_category_for_post($post_id, $name);
@@ -567,6 +652,39 @@ class YDN_Importer {
 		}
 
 		return $upload;
+	}
+
+  /*
+   * Stolen from the WP_Import class
+   */
+  function set_blog( $blog_id ) {
+		if ( is_numeric( $blog_id ) ) {
+			$blog_id = (int) $blog_id;
+		} else {
+			$blog = 'http://' . preg_replace( '#^https?://#', '', $blog_id );
+			if ( ( !$parsed = parse_url( $blog ) ) || empty( $parsed['host'] ) ) {
+				fwrite( STDERR, "Error: can not determine blog_id from $blog_id\n" );
+				exit();
+			}
+			if ( empty( $parsed['path'] ) )
+				$parsed['path'] = '/';
+			$blog = get_blog_details( array( 'domain' => $parsed['host'], 'path' => $parsed['path'] ) );
+			if ( !$blog ) {
+				fwrite( STDERR, "Error: Could not find blog\n" );
+				exit();
+			}
+			$blog_id = (int) $blog->blog_id;
+			// Restore global $current_blog
+			global $current_blog;
+			$current_blog = $blog;
+		}
+
+		if ( function_exists( 'is_multisite' ) ) {
+			if ( is_multisite() )
+				switch_to_blog( $blog_id );
+		}
+
+		return $blog_id;
 	}
 
  

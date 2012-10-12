@@ -34,7 +34,7 @@ if (extension_loaded('xhprof') && PROFILE) {
   $run_id = $xhprof_runs->save_run($xhprof_data, $profiler_namespace);
 
   // url to the XHProf UI libraries (change the host name and path)
-  $profiler_url = sprintf('http://yaledailynews.staging.wpengine.com:8080/xhprof_html/index.php?run=%s&source=%s', $run_id, $profiler_namespace);
+  $profiler_url = sprintf('http://50.116.62.82:8080/xhprof_html/index.php?run=%s&source=%s', $run_id, $profiler_namespace);
   printf("\n%s\n",$profiler_url);
 }
 ?>
