@@ -34,6 +34,8 @@ class YDN_Importer {
 
     if ( $target == "users" ):
       $this->import_users();
+    elseif ( $target == "usersp" ):
+      $this->propagate_users(); 
     else:
       if(!array_key_exists($target,$this->sites_array)) {
         die("invalid site\n");
@@ -192,7 +194,7 @@ class YDN_Importer {
 
   function import_users() {
     $this->mongo_connect();
-    $m_users = Db::find("wp_user",array("true_user" => false), array("limit" => 500));
+    $m_users = Db::find("wp_user",array("true_user" => false), array());
     $default_password = wp_hash_password(wp_generate_password(50,true,true));
 
     //used for adding user to all the blogs
@@ -262,6 +264,21 @@ class YDN_Importer {
       Db::save("wp_user",$m_user);
     }
   } 
+
+  //loops through WP_user, adding all the users to every blog in the network
+  function propagate_users() {
+    $this->mongo_connect();
+    $m_users = Db::find("wp_user",array("true_user" => false), array());
+    for($blog_id = 2; $blog_id <= count($this->sites_array); $blog_id++) {
+      printf("Starting site %d\n", $blog_id);
+      switch_to_blog($blog_id);
+      wp_cache_flush();
+      foreach($m_users as $m_user) {
+        add_user_to_blog($blog_id, $m_user["wp_id"], "author");
+      }
+    }
+  }
+  
 
   function import_galleries() {
     #creates the galleries in this site AND imports the photos associated with them.  This will potentially create duplicates
@@ -387,7 +404,11 @@ class YDN_Importer {
 
       $wp_post_id = wp_insert_post($wp_video);
       $this->register_authors_for_post($wp_post_id, $el_video["computed_bylines"]);
-      print_r($el_video["wp_categories"]);
+
+      if (array_key_exists('wp_categories', $el_video) && !empty($el_video['wp_categories'])) {
+        $this->register_categories_for_post($wp_post_id, $el_video['wp_categories']);
+      }
+
 
      #save that new ID in the mongo set
      $el_video["wp_id"] = $wp_post_id;
@@ -401,7 +422,9 @@ class YDN_Importer {
    * Imports stories for current site
    */
   function import_stories() {
-    $stories = Db::find("story", array("wp_site" => $this->current_site, "el_status" => "1"), array("limit" => 1000) ); 
+    $stories = Db::find("story", array("wp_site" => $this->current_site, "el_status" => "1"), array() ); 
+    $stories->timeout(0);
+    $stories->immortal(true);
     foreach ($stories as $el_story) {
       wp_cache_flush();
       printf("Importing ID %d\n",$el_story["el_id"]);
@@ -453,6 +476,7 @@ class YDN_Importer {
 
       #save that new ID in the mongo set
       $el_story["wp_id"] = $wp_post_id;
+      $el_story["wp_url"] = get_permalink($wp_post_id);
       Db::save("story",$el_story);
 
     }
@@ -540,8 +564,7 @@ class YDN_Importer {
       $name = $obj[1];
       $site = $obj[2];
 
-      if($site != $this->current_site) { continue; } 
-      if($type = "" && $name = "") { continue; } //don't complain about empty ones 
+      if($site != $this->current_site) { printf("site mismatch"); continue; } 
 
       if($type == "cat")  {
         $this->register_category_for_post($post_id, $name);

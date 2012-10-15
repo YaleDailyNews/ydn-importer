@@ -6,7 +6,7 @@ DEFINE('PROFILE', true);
 $_SERVER = array(
   "HTTP_HOST" => "yaledailynews.staging.wpengine.com",
   "SERVER_NAME" => "yaledailynews.staging.wpengine.com",
-  "REQUEST_URI" => "/crosscampus",
+  "REQUEST_URI" => "",
   "REQUEST_METHOD" => "GET"
 );
 
@@ -25,7 +25,9 @@ if (extension_loaded('xhprof') && PROFILE) {
   xhprof_enable(XHPROF_FLAGS_CPU + XHPROF_FLAGS_MEMORY);
 }
 
-$importer = new YDN_Importer($cli_opts['t']);
+//Ensure the $wp_rewrite global is loaded
+////Call flush_rules() as a method of the $wp_rewrite object
+$wp_rewrite->flush_rules();
 
 if (extension_loaded('xhprof') && PROFILE) {
   $profiler_namespace = 'myapp';  // namespace for your application
