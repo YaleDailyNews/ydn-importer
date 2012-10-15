@@ -9,6 +9,7 @@ define( 'WP_IMPORTING', true );
 define( 'EL_BASE_MEDIA_URL', 'http://yaledailynews.media.clients.ellingtoncms.com/');
 define( 'EL_META_PREFIX', 'ydn_legacy_');
 define( 'SAVEQUERIES', 'false');
+define( 'DEFAULT_AUTHOR_ID', 2);
 
               
 
@@ -60,10 +61,10 @@ class YDN_Importer {
     #next run the tasks
     //the ordering of these tasks is NOT arbitrary. Think about cascading dependencies etc very carefully
     $this->mongo_connect();
-    $this->import_galleries();
+    #$this->import_galleries();
     $this->import_videos();
-    $this->import_photos(); 
-    $this->import_stories(); 
+    #$this->import_photos(); 
+    #$this->import_stories(); 
 
   }
 
@@ -367,6 +368,8 @@ class YDN_Importer {
     $coauthors = Array();
 
     if (empty($authors)) { 
+      //default to whatever acct is specified
+      wp_update_post(array("post_author" => DEFAULT_AUTHOR_ID, "ID" => $post_id));
       return;
     }
   
