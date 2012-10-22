@@ -6,7 +6,7 @@ DEFINE('PROFILE', true);
 $_SERVER = array(
   "HTTP_HOST" => "yaledailynews.staging.wpengine.com",
   "SERVER_NAME" => "yaledailynews.staging.wpengine.com",
-  "REQUEST_URI" => "/crosscampus",
+  "REQUEST_URI" => "/",
   "REQUEST_METHOD" => "GET"
 );
 

@@ -61,8 +61,10 @@ class YDN_Importer {
     #next run the tasks
     //the ordering of these tasks is NOT arbitrary. Think about cascading dependencies etc very carefully
     $this->mongo_connect();
+    
+    $this->add_comments_for_story("44371", 41049);
     #$this->import_galleries();
-    $this->import_videos();
+    #$this->import_videos();
     #$this->import_photos(); 
     #$this->import_stories(); 
 
@@ -454,7 +456,7 @@ class YDN_Importer {
 
       $wp_post_id = wp_insert_post($wp_story);
       $this->register_authors_for_post($wp_post_id, $el_story["computed_bylines"]);
-
+      $this->add_comments_for_story($el_story["el_id"], $wp_post_id);
       if (array_key_exists( 'el_one_off_byline', $el_story) && !empty($el_story['el_one_off_byline'])) {
         #import the one off byline text into the custom field
         add_post_meta($wp_post_id, 'ydn_reporter_type', $el_story['el_one_off_byline'], false);
@@ -538,9 +540,38 @@ class YDN_Importer {
    * Only adds comments that are both public and visible.
    */
 
-  function add_comments_for_story($post_id) {
-    // get all comments from mongo database where :el_object_pk == $post_id
-    // 	
+  function add_comments_for_story($el_story_id, $wp_story_id) {
+    $added = array();
+    $comments = Db::find("threadedcomment", array("el_object_pk" => $el_story_id,
+                                                  "el_is_public" => "True",
+                                                  "el_is_removed" => "False"), 
+                                                    array("sort" => array("el_submit_date" => 1)) );
+    foreach($comments as $comment) {
+      $parent = $comment["el_parent_pk"] ?
+                  $added[$comment["el_parent_pk"]] :
+                  NULL;
+      $new_id = $this->add_comment($comment, $parent, $wp_story_id);
+      $added[$comment["el_id"]] = $new_id;
+    }
+  }
+
+  function add_comment($comment, $parent, $story_id) {
+    $user = Db::find("wp_user", array("el_id" => $comment["el_user_id"]));
+    $user = $user->getNext();
+    $user_id = $user ? $user["wp_id"] : 2;
+    $data = array(
+      'comment_post_ID' => $story_id,
+      'comment_author' => $comment["el_user_name"],
+      'comment_author_email' => $comment["el_user_email"],
+      'comment_author_url' => '',
+      'comment_content' => $comment["el_comment"],
+      'comment_parent' => ($parent ? $parent : ''),
+      'user_id' => $user_id,
+      'comment_author_IP' => $comment["el_ip_address"],
+      'comment_date' => $comment["el_submit_date"],
+      'comment_approved' => 1,
+    );
+    return wp_insert_comment($data);
   }
 
   /***
