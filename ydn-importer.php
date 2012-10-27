@@ -1,9 +1,11 @@
 <?php
 /** Display verbose errors */
 include('simplemongophp/Db.php');
+include('Net/SFTP.php');
 
-define( 'MONGODB_NAME', 'ydn_working');
+define( 'MONGODB_NAME', 'ydn_working2');
 define( 'MONGODB_IP', "mongodb://50.116.62.82");
+define( 'SFTP_HOST', "yaledailynews.wpengine.com");
 define( 'IMPORT_DEBUG', true );
 define( 'WP_IMPORTING', true );
 define( 'EL_BASE_MEDIA_URL', 'http://yaledailynews.media.clients.ellingtoncms.com/');
@@ -25,6 +27,18 @@ class YDN_Importer {
     }
   }
 
+  function sftp_connect() {
+    //in case any file changes need to occur on the server, maintain an SFTP connection
+    $this->sftp = new Net_SFTP('yaledailynews.wpengine.com');
+    printf("SFTP Username: ");
+    fscanf(STDIN, "%s\n", $user);
+    printf("SFTP password: ");
+    fscanf(STDIN, "%s\n", $pass);
+    if (!$this->sftp->login($user,$pass)) {
+      exit("Login failed\n");
+    }
+  }
+
   function __construct($target) {
     set_time_limit(0);
     $this->sites_array = array( "main" => 1,
@@ -42,6 +56,7 @@ class YDN_Importer {
         die("invalid site\n");
       }
 
+      //setup the site specific settings
       $this->current_site = $target;
       $this->set_blog($this->sites_array[$target]);
       $this->start_site_import();
@@ -53,21 +68,18 @@ class YDN_Importer {
 
   function start_site_import() {
     #first set some variables
-    $legacy_photo_prefix = "/legacy/media/";
-    $wp_upload_dir = wp_upload_dir();
-    $this->legacy_media_base_path = $wp_upload_dir["basedir"] . $legacy_photo_prefix;
-    $this->wp_media_base_url =  $wp_upload_dir["baseurl"] . $legacy_photo_prefix;
+    //all the legacy media should refer to the root site's media dir
+    $this->legacy_media_base_path = "legacy/media/";
+    $this->wp_media_base_url = "http://yaledailynews.staging.wpengine.com/wp-content/uploads/legacy/media/"; 
 
     #next run the tasks
     //the ordering of these tasks is NOT arbitrary. Think about cascading dependencies etc very carefully
     $this->mongo_connect();
-    
-    $this->add_comments_for_story("44371", 41049);
-    #$this->import_galleries();
-    #$this->import_videos();
-    #$this->import_photos(); 
-    #$this->import_stories(); 
-
+    $this->sftp_connect();
+#    $this->import_galleries();
+#    $this->import_videos();
+    $this->import_photos(); 
+#    $this->import_stories(); 
   }
 
   function import_cleanup() {
@@ -93,7 +105,8 @@ class YDN_Importer {
     printf("Beginning import of %s\n",$el_photo["el_photo"]);
     if(array_key_exists("wp_id", $el_photo) && !empty($el_photo["wp_id"]) ) {
       //we've already imported this! don't do it again
-      return $el_photo["wp_id"];
+      printf("already imported\n");
+      //return $el_photo["wp_id"];
     }
 
     /* specify some defaults for $el_photo */
@@ -112,6 +125,16 @@ class YDN_Importer {
     if ( Db::count("media_ents", array("path" => $el_photo["el_photo"]) ) == 1 ) {
       //grab metadata
       $wp_attachment['guid'] = $this->wp_media_base_url . $el_photo["el_photo"];
+
+      //if we're not importing into the mainsite, we need to move the file from the uploads dir 
+      //into the appropriate blogs.dir directory
+      if ($this->current_site != "main") {
+        $old_full_path = "wp-content/uploads/" . $photo_path;
+        $new_full_path = "wp-content/blogs.dir/" . $this->sites_array[$this->current_site] . "/files/" . $photo_path;
+        $this->sftp_move_file($old_full_path, $new_full_path);
+        printf("phot_path %s\n",$photo_path);
+      }
+
     } else {
       //attempt to fetch the photo from the Ellington media server
       $el_url = EL_BASE_MEDIA_URL . $el_photo["el_photo"];
@@ -186,6 +209,24 @@ class YDN_Importer {
     return $wp_attachment_id;
   }
 
+  function sftp_move_file($current_path, $new_path) {
+    $path_elts = explode('/',$new_path);
+    $temp_path = '';
+    for($i = 0; $i < count($path_elts) - 1; $i++) {
+      $temp_path = $temp_path . '/' . $path_elts[$i];
+      $this->sftp->mkdir($temp_path);
+    }
+    if ($current_path[0] != '/') {
+      $current_path = '/' . $current_path;
+    }
+    if ($new_path[0] != '/') {
+      $new_path = '/' . $new_path;
+    }
+    if(!$this->sftp->rename($current_path, $new_path)) {
+      printf("error moving file: %s --> %s\n",$current_path, $new_path);
+    }
+  }
+
   function generate_wp_username($first_name, $last_name ) {
     $user_login = sprintf("%s %s",$first_name, $last_name);
     $user_login = preg_replace('/\s+/','',$user_login); //get rid of any spaces
@@ -197,7 +238,7 @@ class YDN_Importer {
 
   function import_users() {
     $this->mongo_connect();
-    $m_users = Db::find("wp_user",array("true_user" => false), array());
+    $m_users = Db::find("wp_user",array(), array());
     $default_password = wp_hash_password(wp_generate_password(50,true,true));
 
     //used for adding user to all the blogs
