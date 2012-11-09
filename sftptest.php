@@ -1,5 +1,6 @@
 <?php
 include('Net/SFTP.php');
+function fetch_file($url, $destination) {
 $sftp = new Net_SFTP('yaledailynews.wpengine.com');
 printf("SFTP Username: ");
 fscanf(STDIN, "%s\n", $user);
@@ -8,11 +9,22 @@ fscanf(STDIN, "%s\n", $pass);
 if (!$sftp->login($user,$pass)) {
   exit("Login failed\n");
 }
-$test_dir = 'wp-content/dne/dne2/dne3/dsafdfasd/a';
-$path_elts = explode('/',$test_dir);
-$current_path = '';
-for($i = 0; $i < count($path_elts) - 1; $i++) {
-  $current_path = $current_path . '/' . $path_elts[$i];
-  $sftp->mkdir($current_path);
+
+$ch = curl_init(); //create a cURL resource
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_HEADER, 0);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+		$file_contents = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+    if(curl_errno($ch) != 0 || $http_code != 200) {
+      printf('error\n');
+      return;
+    } 
+    //close cURL resource, and free up system resources
+    $sftp->put($destination,$file_contents);
+    curl_close($ch);
+    unset($file_contents);
 }
+fetch_file("http://yaledailynews.media.clients.ellingtoncms.com/img/photos/2012/10/24/JacobGeiger_DivDeanInauguration-85_r470x350.jpg","/wp-content/geiger_test.jpg");
 ?>

@@ -1,10 +1,9 @@
 <?php
 /** Display verbose errors */
 include('simplemongophp/Db.php');
-include('Net/SFTP.php');
 
 define( 'MONGODB_NAME', 'ydn_working2');
-define( 'MONGODB_IP', "mongodb://50.116.62.82");
+define( 'MONGODB_IP', "mongodb://localhost");
 define( 'SFTP_HOST', "yaledailynews.wpengine.com");
 define( 'IMPORT_DEBUG', true );
 define( 'WP_IMPORTING', true );
@@ -12,6 +11,9 @@ define( 'EL_BASE_MEDIA_URL', 'http://yaledailynews.media.clients.ellingtoncms.co
 define( 'EL_META_PREFIX', 'ydn_legacy_');
 define( 'SAVEQUERIES', 'false');
 define( 'DEFAULT_AUTHOR_ID', 2);
+define( 'DEFAULT_COMMENT_ID', 2);
+define( 'DEFAULT_COMMENT_USERNAME', "None");
+define( 'WPENGINE_FS_PATH', "/var/www/wordpress/wp-content/plugins/ydn-importer/wpengine_fs/");
 
               
 
@@ -27,17 +29,6 @@ class YDN_Importer {
     }
   }
 
-  function sftp_connect() {
-    //in case any file changes need to occur on the server, maintain an SFTP connection
-    $this->sftp = new Net_SFTP('yaledailynews.wpengine.com');
-    printf("SFTP Username: ");
-    fscanf(STDIN, "%s\n", $user);
-    printf("SFTP password: ");
-    fscanf(STDIN, "%s\n", $pass);
-    if (!$this->sftp->login($user,$pass)) {
-      exit("Login failed\n");
-    }
-  }
 
   function __construct($target) {
     set_time_limit(0);
@@ -70,16 +61,15 @@ class YDN_Importer {
     #first set some variables
     //all the legacy media should refer to the root site's media dir
     $this->legacy_media_base_path = "legacy/media/";
-    $this->wp_media_base_url = "http://yaledailynews.staging.wpengine.com/wp-content/uploads/legacy/media/"; 
+    $this->wp_media_base_url = "http://yaledailynews.staging.wpengine.com/wp-content/uploads/legacy/media/"; #used in guid only
 
     #next run the tasks
     //the ordering of these tasks is NOT arbitrary. Think about cascading dependencies etc very carefully
     $this->mongo_connect();
-    $this->sftp_connect();
-#    $this->import_galleries();
-#    $this->import_videos();
+    $this->import_galleries();
+    $this->import_videos();
     $this->import_photos(); 
-#    $this->import_stories(); 
+    $this->import_stories(); 
   }
 
   function import_cleanup() {
@@ -93,6 +83,9 @@ class YDN_Importer {
   function import_photos() {
     $this->mongo_connect();
     $photos = Db::find("photo", array("wp_sites" => $this->current_site), array() );
+    $photos->snapshot();
+    $photos->timeout(0);
+    $photos->immortal(true);
     foreach ($photos as $el_photo) {
       $this->import_specific_photo( $el_photo );
     }
@@ -102,11 +95,9 @@ class YDN_Importer {
    * If there's a WP_id already associated with the image, then just return that */
   function import_specific_photo( $el_photo, $wp_attachment_parent = 0 ) {
     wp_cache_flush();
-    printf("Beginning import of %s\n",$el_photo["el_photo"]);
     if(array_key_exists("wp_id", $el_photo) && !empty($el_photo["wp_id"]) ) {
       //we've already imported this! don't do it again
-      printf("already imported\n");
-      //return $el_photo["wp_id"];
+      return $el_photo["wp_id"];
     }
 
     /* specify some defaults for $el_photo */
@@ -122,34 +113,34 @@ class YDN_Importer {
     #Figure out if the file is in the file system. Fetch relevant file info if so
     #If not, grab it from Ellington
     $photo_path = $this->legacy_media_base_path . $el_photo["el_photo"];
-    if ( Db::count("media_ents", array("path" => $el_photo["el_photo"]) ) == 1 ) {
-      //grab metadata
-      $wp_attachment['guid'] = $this->wp_media_base_url . $el_photo["el_photo"];
+    $wp_attachment['guid'] = $this->wp_media_base_url . $el_photo["el_photo"];
 
+    if ( Db::count("media_ents", array("path" => $el_photo["el_photo"]) ) == 1 ) {
       //if we're not importing into the mainsite, we need to move the file from the uploads dir 
       //into the appropriate blogs.dir directory
       if ($this->current_site != "main") {
-        $old_full_path = "wp-content/uploads/" . $photo_path;
-        $new_full_path = "wp-content/blogs.dir/" . $this->sites_array[$this->current_site] . "/files/" . $photo_path;
-        $this->sftp_move_file($old_full_path, $new_full_path);
-        printf("phot_path %s\n",$photo_path);
+        $old_full_path = WPENGINE_FS_PATH . "wp-content/uploads/" . $photo_path;
+        $new_full_path = WPENGINE_FS_PATH . "wp-content/blogs.dir/" . $this->sites_array[$this->current_site] . "/files/" . $photo_path;
+        $copy = (count(array_unique($el_photo["wp_sites"])) > 1); //copy it only if its used on multiple sites
+        $this->sftp_transfer_file($old_full_path, $new_full_path,$copy);
       }
-
     } else {
-      //attempt to fetch the photo from the Ellington media server
+      //attempt to fetch the photo from the Ellington media server and store it at the new path
       $el_url = EL_BASE_MEDIA_URL . $el_photo["el_photo"];
-      $upload = $this->fetch_remote_file($el_url, $el_photo);
+      if ($this->current_site == "main") {
+        $upload_destination = WPENGINE_FS_PATH . "wp-content/uploads/" . $photo_path;
+      } else {
+        $upload_destination = WPENGINE_FS_PATH . "wp-content/blogs.dir/" . $this->sites_array[$this->current_site] . "/files/" . $photo_path;
+      }
+      $upload = $this->fetch_remote_file($el_url, $upload_destination);
     
       if ( is_wp_error( $upload ) ) {
-        printf("Error fetching photo for el_id %d \n>", $el_photo["el_id"]);
+        printf("Error fetching photo for el_id %d \n", $el_photo["el_id"]);
         return new WP_Error("import_specific_photo_error", "Error importing photo" );
       }
-
-      $photo_path = $upload['file'];
-      $wp_attachment['guid'] = $upload['url'];
     }
+
     #grab filedata
-    
     if ( $info = wp_check_filetype( $photo_path ) ) {
       $wp_attachment['post_mime_type'] = $info['type'];
     } else {
@@ -205,40 +196,38 @@ class YDN_Importer {
     $el_photo["wp_id"] = $wp_attachment_id;
     Db::save("photo",$el_photo);
 
-    printf("Imported %s as %d\n",$el_photo["el_photo"], $wp_attachment_id);
     return $wp_attachment_id;
   }
 
-  function sftp_move_file($current_path, $new_path) {
-    $path_elts = explode('/',$new_path);
-    $temp_path = '';
-    for($i = 0; $i < count($path_elts) - 1; $i++) {
-      $temp_path = $temp_path . '/' . $path_elts[$i];
-      $this->sftp->mkdir($temp_path);
-    }
-    if ($current_path[0] != '/') {
-      $current_path = '/' . $current_path;
-    }
-    if ($new_path[0] != '/') {
-      $new_path = '/' . $new_path;
-    }
-    if(!$this->sftp->rename($current_path, $new_path)) {
-      printf("error moving file: %s --> %s\n",$current_path, $new_path);
+  function sftp_transfer_file($current_path, $new_path, $copy = false) {
+    //first ensure that all the directories exist
+    $this->sftp_ensure_dirs($new_path); 
+    if ($copy) {
+      copy($current_path, $new_path);
+    } else {
+      rename($current_path, $new_path);
     }
   }
 
+  function sftp_ensure_dirs($path) {
+    //makes certain that every element on the path to file exists
+    $dirs = dirname($path);
+    if(!file_exists($dirs)) {
+      mkdir($dirs,0777,true);
+    }
+  }
   function generate_wp_username($first_name, $last_name ) {
     $user_login = sprintf("%s %s",$first_name, $last_name);
-    $user_login = preg_replace('/\s+/','',$user_login); //get rid of any spaces
     $user_login = iconv("UTF-8","ASCII//TRANSLIT", $user_login); //get rid of any weird non ascii characters if possible
+    $user_login = preg_replace("/[^a-zA-Z0-9]/", "", $user_login); //strip nonalphanum
     $user_login = strtolower($user_login); //downcase it
-
     return $user_login;
   }
 
   function import_users() {
     $this->mongo_connect();
     $m_users = Db::find("wp_user",array(), array());
+    $m_users->snapshot();
     $default_password = wp_hash_password(wp_generate_password(50,true,true));
 
     //used for adding user to all the blogs
@@ -288,7 +277,11 @@ class YDN_Importer {
            //then import
           $wp_user["ID"] = $old_user->ID;
          } else {
-               continue;
+           //send the already existing ID back to mongo so it will be used in future
+           //but don't modify our wp DB
+           $m_user["wp_id"] = $old_user->ID;
+           Db::save("wp_user",$m_user); 
+           continue;
          }
 
       }
@@ -312,13 +305,14 @@ class YDN_Importer {
   //loops through WP_user, adding all the users to every blog in the network
   function propagate_users() {
     $this->mongo_connect();
-    $m_users = Db::find("wp_user",array("true_user" => false), array());
+    $m_users = Db::find("wp_user",array(), array());
     for($blog_id = 2; $blog_id <= count($this->sites_array); $blog_id++) {
       printf("Starting site %d\n", $blog_id);
       switch_to_blog($blog_id);
       wp_cache_flush();
       foreach($m_users as $m_user) {
-        add_user_to_blog($blog_id, $m_user["wp_id"], "author");
+        $role = $m_user["true_user"] == 1 ? "subscriber" : "author";
+        add_user_to_blog($blog_id, $m_user["wp_id"], $role);
       }
     }
   }
@@ -358,6 +352,7 @@ class YDN_Importer {
                                 "slider_pause_hover" => "off"
                               );
    $galleries = Db::find("gallery", array("wp_sites" => $this->current_site), array() );
+   $galleries->snapshot();
    foreach ($galleries as $gallery) {
      #first create the showcase post in the WP databse
      $wp_gallery = Array( "post_title" => $gallery["el_name"],
@@ -377,11 +372,17 @@ class YDN_Importer {
 
      #loop through the member photos and import them into the gallery 
      $gallery_photos = Db::find("galleryphoto", array("el_gallery_id" => $gallery["el_id"] ), array() );
+     $gallery_photos->snapshot();
      foreach ($gallery_photos as $gallery_photo) {
          //for some reason, the $gallery_photo object isn't actually the photo, but contains a pointer to it.
          //find the real record.
         $photo_record = Db::find("photo", array("el_id" => $gallery_photo["el_photo_id"] ), array("limit" => 1) ); 
         $photo_record = $photo_record->getNext();
+
+        if (empty($photo_record)) {
+          printf("Error: unable to find gallery photo %s\n",$gallery_photo["el_photo_id"]);
+          continue;
+        }
 
         #now actually import and wire everything up
         $gallery_photo_id = $this->import_specific_photo($photo_record, $wp_gallery_id);
@@ -434,6 +435,7 @@ class YDN_Importer {
 
   function import_videos() {
     $videos = Db::find("video", array("wp_site" => $this->current_site ), array() );
+    $videos->snapshot();
     foreach ( $videos as $el_video ) {
       $creation_time = strtotime($el_video["el_creation_date"]);
 
@@ -471,6 +473,8 @@ class YDN_Importer {
     $stories = Db::find("story", array("wp_site" => $this->current_site, "el_status" => "1"), array() ); 
     $stories->timeout(0);
     $stories->immortal(true);
+    $stories->snapshot();
+    $ydn_url_rewrites = YDN_URL_Rewrites::get_instance();
     foreach ($stories as $el_story) {
       wp_cache_flush();
       printf("Importing ID %d\n",$el_story["el_id"]);
@@ -519,6 +523,13 @@ class YDN_Importer {
         add_post_meta($wp_post_id, 'ydn_opinion_column', $el_story["el_subhead"]);
       }
 
+      #record the old ellington ID just in case anything ever goes wrong
+      add_post_meta( $wp_post_id, EL_META_PREFIX . "id", $el_story["el_id"] );
+
+      #create a rewrite record in the database
+      if(!empty($el_story["el_url"]) {
+        $ydn_url_rewrite->add_rewrite($el_story["el_url"], get_permalink($wp_post_id));
+      }
 
       #save that new ID in the mongo set
       $el_story["wp_id"] = $wp_post_id;
@@ -599,7 +610,7 @@ class YDN_Importer {
   function add_comment($comment, $parent, $story_id) {
     $user = Db::find("wp_user", array("el_id" => $comment["el_user_id"]));
     $user = $user->getNext();
-    $user_id = $user ? $user["wp_id"] : 2;
+    $user_id = $user ? $user["wp_id"] : DEFAULT_COMMENTER_ID;
     $data = array(
       'comment_post_ID' => $story_id,
       'comment_author' => $comment["el_user_name"],
@@ -639,7 +650,7 @@ class YDN_Importer {
       $name = $obj[1];
       $site = $obj[2];
 
-      if($site != $this->current_site) { printf("site mismatch"); continue; } 
+      if($site != $this->current_site) { printf("site mismatch\n"); continue; } 
 
       if($type == "cat")  {
         $this->register_category_for_post($post_id, $name);
@@ -712,44 +723,24 @@ class YDN_Importer {
 	 * @param array $post Attachment details
 	 * @return array|WP_Error Local file location details on success, WP_Error otherwise
 	 */
-	function fetch_remote_file( $url, $mongo_rec ) {
-		// extract the file name and extension from the url
-		$file_name =  basename( $url );
+	function fetch_remote_file( $url, $destination ) {
+    $ch = curl_init(); //create a cURL resource
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_HEADER, 0);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+		$file_contents = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-		// get placeholder file in the upload dir with a unique, sanitized filename
-    $upload_date = date("Y/m", strtotime($mongo_rec['el_pub_date']));
-		$upload = wp_upload_bits( $file_name, 0, '', $upload_date);
-		if ( $upload['error'] )
-			return new WP_Error( 'upload_dir_error', $upload['error'] );
-
-		// fetch the remote url and write it to the placeholder file
-		$headers = wp_get_http( $url, $upload['file'] );
-
-		// request failed
-		if ( ! $headers ) {
-			@unlink( $upload['file'] );
-			return new WP_Error( 'import_file_error', __('Remote server did not respond', 'wordpress-importer') );
-		}
-
-		// make sure the fetch was successful
-		if ( $headers['response'] != '200' ) {
-			@unlink( $upload['file'] );
-			return new WP_Error( 'import_file_error', sprintf( __('Remote server returned error response %1$d %2$s', 'wordpress-importer'), esc_html($headers['response']), get_status_header_desc($headers['response']) ) );
-		}
-
-		$filesize = filesize( $upload['file'] );
-
-		if ( isset( $headers['content-length'] ) && $filesize != $headers['content-length'] ) {
-			@unlink( $upload['file'] );
-			return new WP_Error( 'import_file_error', __('Remote file is incorrect size', 'wordpress-importer') );
-		}
-
-		if ( 0 == $filesize ) {
-			@unlink( $upload['file'] );
-			return new WP_Error( 'import_file_error', __('Zero size file downloaded', 'wordpress-importer') );
-		}
-
-		return $upload;
+    if(curl_errno($ch) != 0 || $http_code != 200) {
+      unset($file_contents);
+      return new WP_Error('badcode', "File transfer failed.");
+    } 
+    //close cURL resource, and free up system resources
+    file_put_contents($destination, $file_contents);
+    curl_close($ch);
+    unset($file_contents);
+    printf("Fetch Successful: %s --> %s\n",$url,$destination);
+    return true;
 	}
 
   /*
