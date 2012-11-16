@@ -4,8 +4,8 @@ define('DOING_AJAX', true);
 define('WP_USE_THEMES', false);
 DEFINE('PROFILE', true);
 $_SERVER = array(
-  "HTTP_HOST" => "yaledailynews.staging.wpengine.com",
-  "SERVER_NAME" => "yaledailynews.staging.wpengine.com",
+  "HTTP_HOST" => "yaledailynews.com",
+  "SERVER_NAME" => "yaledailynews.com",
   "REQUEST_URI" => "/",
   "REQUEST_METHOD" => "GET"
 );

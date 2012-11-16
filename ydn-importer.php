@@ -4,14 +4,13 @@ include('simplemongophp/Db.php');
 
 define( 'MONGODB_NAME', 'ydn_working2');
 define( 'MONGODB_IP', "mongodb://localhost");
-define( 'SFTP_HOST', "yaledailynews.wpengine.com");
 define( 'IMPORT_DEBUG', true );
 define( 'WP_IMPORTING', true );
 define( 'EL_BASE_MEDIA_URL', 'http://yaledailynews.media.clients.ellingtoncms.com/');
 define( 'EL_META_PREFIX', 'ydn_legacy_');
 define( 'SAVEQUERIES', 'false');
-define( 'DEFAULT_AUTHOR_ID', 2);
-define( 'DEFAULT_COMMENT_ID', 2);
+define( 'DEFAULT_AUTHOR_ID', 13);
+define( 'DEFAULT_COMMENT_ID', 13);
 define( 'DEFAULT_COMMENT_USERNAME', "None");
 define( 'WPENGINE_FS_PATH', "/var/www/wordpress/wp-content/plugins/ydn-importer/wpengine_fs/");
 
@@ -61,7 +60,7 @@ class YDN_Importer {
     #first set some variables
     //all the legacy media should refer to the root site's media dir
     $this->legacy_media_base_path = "legacy/media/";
-    $this->wp_media_base_url = "http://yaledailynews.staging.wpengine.com/wp-content/uploads/legacy/media/"; #used in guid only
+    $this->wp_media_base_url = "http://yaledailynews.com/wp-content/uploads/legacy/media/"; #used in guid only
 
     #next run the tasks
     //the ordering of these tasks is NOT arbitrary. Think about cascading dependencies etc very carefully
@@ -527,8 +526,8 @@ class YDN_Importer {
       add_post_meta( $wp_post_id, EL_META_PREFIX . "id", $el_story["el_id"] );
 
       #create a rewrite record in the database
-      if(!empty($el_story["el_url"]) {
-        $ydn_url_rewrite->add_rewrite($el_story["el_url"], get_permalink($wp_post_id));
+      if(!empty($el_story["el_url"])) {
+        $ydn_url_rewrites->add_rewrite($el_story["el_url"], get_permalink($wp_post_id));
       }
 
       #save that new ID in the mongo set

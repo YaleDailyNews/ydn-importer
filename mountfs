@@ -1,0 +1,2 @@
+#!/bin/bash
+sshfs yaledailynews@yaledailynews.wpengine.com: wpengine_fs
